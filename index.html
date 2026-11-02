@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>studio PRANA 受付</title>
+<!--
+  studio PRANA 受付（カメラ付き）
+  Google の受付画面（GAS）は枠の制限でカメラが使えない。
+  このページがカメラで QR を読み、埋め込んだ受付画面に会員番号だけを送る。
+  受付の処理・ログイン・二重入室の防止はすべて受付画面側のまま。
+-->
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; background: #2b0d0d; overflow: hidden; }
+  #app { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
+  #cam {
+    position: fixed; z-index: 10; width: 200px;
+    background: #000; border-radius: 14px; overflow: hidden;
+    border: 4px solid rgba(255,255,255,.85); box-shadow: 0 4px 16px rgba(0,0,0,.35);
+    transition: border-color .15s;
+  }
+  #cam.pos-tr { top: 12px; right: 12px; }
+  #cam.pos-tl { top: 12px; left: 12px; }
+  #cam.pos-br { bottom: 12px; right: 12px; }
+  #cam.pos-bl { bottom: 12px; left: 12px; }
+  #cam.hit { border-color: #2ecc71; }
+  #reader { width: 100%; min-height: 120px; }
+  #reader video { width: 100% !important; height: auto !important; display: block; }
+  #cam.front #reader video { transform: scaleX(-1); }
+  #reader img, #reader__dashboard, #reader__header_message { display: none !important; }
+  #bar { display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,.6); }
+  #bar button {
+    flex: 1; font-size: 12px; padding: 6px 2px; border: 0; border-radius: 8px;
+    background: rgba(255,255,255,.9); color: #333;
+  }
+  #msg { color: #fff; font-size: 12px; padding: 6px 8px; display: none; line-height: 1.4; }
+  #msg button { margin-top: 6px; width: 100%; font-size: 14px; padding: 8px; border: 0; border-radius: 8px; }
+</style>
+</head>
+<body>
+<iframe id="app" src="https://script.google.com/macros/s/AKfycbyiOjrSAHYsS3WIfSeBjgNs94p2wznxBJQEMdQ4vnoD517w7LT0lQHh3OMTJ9PZEYU7/exec?page=reception"></iframe>
+
+<div id="cam" class="pos-tr">
+  <div id="reader"></div>
+  <div id="msg"></div>
+  <div id="bar">
+    <button type="button" id="btnFlip">カメラ切替</button>
+    <button type="button" id="btnMove">位置</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var POSITIONS = ['pos-tr', 'pos-tl', 'pos-bl', 'pos-br'];
+  var SAME_CODE_GAP_MS = 3000; // 同じQRは、いったん写らなくなって3秒たつまで送らない
+
+  function load(key, def) { try { return localStorage.getItem(key) || def; } catch (e) { return def; } }
+  function save(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+
+  var cam = document.getElementById('cam');
+  var msg = document.getElementById('msg');
+  var facing = load('prana_kiosk_facing', 'user');      // 受付 iPad は前のカメラ。スマホなら切替で後ろ
+  var pos = load('prana_kiosk_pos', 'pos-tr');
+  if (POSITIONS.indexOf(pos) === -1) pos = 'pos-tr';
+  cam.className = pos;
+
+  var qr = null;
+  var running = false;
+  var lastCode = '';
+  var lastSeenAt = 0;
+
+  // 受付画面は Google の枠の中にさらに枠がある。全部の枠に送り、受付画面側が送り元を確かめて受け取る
+  function sendToFrames(w, data) {
+    for (var i = 0; i < w.frames.length; i++) {
+      try { w.frames[i].postMessage(data, '*'); } catch (e) {}
+      try { sendToFrames(w.frames[i], data); } catch (e) {}
+    }
+  }
+
+  function onCode(text) {
+    var code = String(text || '').trim();
+    if (!code) return;
+    var now = Date.now();
+    if (code === lastCode && now - lastSeenAt < SAME_CODE_GAP_MS) { lastSeenAt = now; return; }
+    lastCode = code;
+    lastSeenAt = now;
+    sendToFrames(window, { type: 'prana-qr', code: code });
+    cam.classList.add('hit');
+    setTimeout(function () { cam.classList.remove('hit'); }, 600);
+  }
+
+  function showMsg(text, withButton) {
+    msg.style.display = 'block';
+    msg.innerHTML = '';
+    msg.appendChild(document.createTextNode(text));
+    if (withButton) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = 'カメラを開始';
+      b.onclick = function () { start(); };
+      msg.appendChild(b);
+    }
+  }
+  function hideMsg() { msg.style.display = 'none'; }
+
+  function start() {
+    if (typeof Html5Qrcode === 'undefined') { showMsg('読み取りの部品を読み込めませんでした。再読み込みしてください', false); return; }
+    hideMsg();
+    if (!qr) qr = new Html5Qrcode('reader', { verbose: false });
+    cam.classList.toggle('front', facing === 'user');
+    qr.start({ facingMode: facing }, { fps: 10 }, onCode, function () {})
+      .then(function () { running = true; })
+      .catch(function () {
+        running = false;
+        showMsg('カメラを使えませんでした。カメラを許可してから押してください', true);
+      });
+  }
+
+  function stop() {
+    if (qr && running) {
+      running = false;
+      return qr.stop().catch(function () {});
+    }
+    return Promise.resolve();
+  }
+
+  document.getElementById('btnFlip').onclick = function () {
+    facing = (facing === 'user') ? 'environment' : 'user';
+    save('prana_kiosk_facing', facing);
+    stop().then(start);
+  };
+  document.getElementById('btnMove').onclick = function () {
+    pos = POSITIONS[(POSITIONS.indexOf(pos) + 1) % POSITIONS.length];
+    save('prana_kiosk_pos', pos);
+    cam.className = pos + (facing === 'user' ? ' front' : '');
+  };
+
+  // 受付画面に「カメラ付きで開いている」ことを知らせる（案内文の切り替え用）。枠の読み込みが遅いので数回送る
+  function hello() { sendToFrames(window, { type: 'prana-kiosk-hello' }); }
+  setInterval(hello, 3000);
+  document.getElementById('app').addEventListener('load', hello);
+
+  // 画面を消して戻ったときにカメラが止まっていたら付け直す
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && !running) start();
+  });
+
+  start();
+})();
+</script>
+</body>
+</html>
