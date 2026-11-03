@@ -37,6 +37,22 @@
   #tip { display: none; background: #2ecc71; color: #fff; font-size: 13px; font-weight: bold; padding: 4px 8px; }
   #msg { color: #fff; font-size: 12px; padding: 6px 8px; display: none; line-height: 1.4; }
   #msg button { margin-top: 6px; width: 100%; font-size: 14px; padding: 8px; border: 0; border-radius: 8px; }
+  #btnFlipMini { display: none; }
+  /* 受付画面の枠の中に重ねるとき（受付画面が枠の位置を知らせてくる） */
+  #cam.docked { border: 0; border-radius: 20px; box-shadow: none; }
+  #cam.docked #reader { position: absolute; inset: 0; min-height: 0; }
+  #cam.docked #reader video { height: 100%; }
+  #cam.docked #bar { display: none; }
+  #cam.docked #tip { position: absolute; left: 0; right: 0; bottom: 0; text-align: center; font-size: 16px; padding: 8px; }
+  #cam.docked #msg { position: absolute; left: 10px; right: 10px; top: 50%; transform: translateY(-50%); background: rgba(0,0,0,.7); border-radius: 12px; font-size: 14px; }
+  #cam.docked #btnFlipMini {
+    display: block; position: absolute; top: 8px; right: 8px; width: 40px; height: 40px;
+    border: 0; border-radius: 50%; background: rgba(0,0,0,.45); color: #fff; font-size: 20px; line-height: 40px; padding: 0;
+  }
+  #cam.docked.hit::after {
+    content: ''; position: absolute; inset: 0; border: 6px solid #2ecc71; border-radius: 20px; pointer-events: none;
+  }
+  #cam.hidden { visibility: hidden; }
 </style>
 </head>
 <body>
@@ -46,6 +62,7 @@
   <div id="reader"></div>
   <div id="tip"></div>
   <div id="msg"></div>
+  <button type="button" id="btnFlipMini" aria-label="カメラ切替">⟲</button>
   <div id="bar">
     <button type="button" id="btnFlip">カメラ切替</button>
     <button type="button" id="btnMove">位置</button>
@@ -184,21 +201,61 @@
     return Promise.resolve();
   }
 
-  document.getElementById('btnFlip').onclick = function () {
+  function flipCamera() {
     facing = (facing === 'user') ? 'environment' : 'user';
     save('prana_kiosk_facing', facing);
     stop().then(start);
-  };
+  }
+  document.getElementById('btnFlip').onclick = flipCamera;
+  document.getElementById('btnFlipMini').onclick = flipCamera;
   document.getElementById('btnMove').onclick = function () {
     pos = POSITIONS[(POSITIONS.indexOf(pos) + 1) % POSITIONS.length];
     save('prana_kiosk_pos', pos);
-    cam.className = pos + (facing === 'user' ? ' front' : '');
+    POSITIONS.forEach(function (p) { cam.classList.remove(p); });
+    cam.classList.add(pos);
   };
 
   // 受付画面に「カメラ付きで開いている」ことを知らせる（案内文の切り替え用）。枠の読み込みが遅いので数回送る
   function hello() { sendToFrames(window, { type: 'prana-kiosk-hello' }); }
   setInterval(hello, 3000);
   document.getElementById('app').addEventListener('load', hello);
+
+  // 受付画面が「枠の位置」を知らせてきたら、カメラ映像をその枠の中に重ねる。
+  //   知らせが来ない（古い受付画面）ときは今までどおり隅に浮かせる。幅0はログイン前・結果画面 → 隠す（読み取りは続ける）
+  var app = document.getElementById('app');
+  var GAS_FRAME_ORIGIN = /^https:\/\/[a-z0-9-]+-script\.googleusercontent\.com$/;
+  function isOurFrame(src) {
+    function walk(w) {
+      if (w === src) return true;
+      for (var i = 0; i < w.frames.length; i++) {
+        try { if (walk(w.frames[i])) return true; } catch (e) {}
+      }
+      return false;
+    }
+    try { return walk(app.contentWindow); } catch (e) { return false; }
+  }
+  function num(v) { return typeof v === 'number' && isFinite(v) ? v : NaN; }
+  window.addEventListener('message', function (ev) {
+    if (!GAS_FRAME_ORIGIN.test(ev.origin) || !isOurFrame(ev.source)) return;
+    var d = ev.data;
+    if (!d || typeof d !== 'object' || d.type !== 'prana-kiosk-rect') return;
+    var x = num(d.x), y = num(d.y), w = num(d.w), h = num(d.h), vw = num(d.vw), vh = num(d.vh);
+    if ([x, y, w, h, vw, vh].some(isNaN)) return;
+    if (w < 40 || h < 40) {
+      cam.classList.add('docked', 'hidden');
+      return;
+    }
+    var sx = vw > 0 ? window.innerWidth / vw : 1;
+    var sy = vh > 0 ? window.innerHeight / vh : 1;
+    cam.classList.add('docked');
+    cam.classList.remove('hidden');
+    cam.style.left = Math.round(x * sx) + 'px';
+    cam.style.top = Math.round(y * sy) + 'px';
+    cam.style.width = Math.round(w * sx) + 'px';
+    cam.style.height = Math.round(h * sy) + 'px';
+    cam.style.right = 'auto';
+    cam.style.bottom = 'auto';
+  });
 
   // 画面を消して戻ったときにカメラが止まっていたら付け直す
   document.addEventListener('visibilitychange', function () {
