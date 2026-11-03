@@ -94,6 +94,14 @@
 
   function onCode(text) {
     var code = String(text || '').trim();
+    // カード裏面の予約ページQR（…/exec?page=reserve&id=STU…）なら会員番号だけ取り出す
+    if (/^https:\/\/script\.google\.com\//.test(code) && /[?&]page=reserve(&|$)/.test(code)) {
+      var m = code.match(/[?&]id=([^&#]+)/);
+      if (m) {
+        try { code = decodeURIComponent(m[1]); } catch (e) { code = m[1]; }
+        if (!/^[A-Za-z0-9_-]{1,40}$/.test(code)) return;
+      }
+    }
     if (!code) return;
     var now = Date.now();
     if (code === lastCode && now - lastSeenAt < SAME_CODE_GAP_MS) { lastSeenAt = now; return; }
