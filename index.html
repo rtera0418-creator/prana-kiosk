@@ -11,7 +11,7 @@
   このページがカメラで QR を読み、埋め込んだ受付画面に会員番号だけを送る。
   受付の処理・ログイン・二重入室の防止はすべて受付画面側のまま。
 -->
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 <style>
   html, body { margin: 0; height: 100%; background: #2b0d0d; overflow: hidden; }
   #app { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
@@ -27,14 +27,14 @@
   #cam.pos-bl { bottom: 12px; left: 12px; }
   #cam.hit { border-color: #2ecc71; }
   #reader { width: 100%; min-height: 120px; }
-  #reader video { width: 100% !important; height: 150px !important; object-fit: cover; display: block; }
+  #reader video { width: 100%; height: 150px; object-fit: cover; display: block; }
   #cam.front #reader video { transform: scaleX(-1); }
-  #reader img, #reader__dashboard, #reader__header_message { display: none !important; }
   #bar { display: flex; gap: 4px; padding: 4px; background: rgba(0,0,0,.6); }
   #bar button {
     flex: 1; font-size: 12px; padding: 6px 2px; border: 0; border-radius: 8px;
     background: rgba(255,255,255,.9); color: #333;
   }
+  #tip { display: none; background: #2ecc71; color: #fff; font-size: 13px; font-weight: bold; padding: 4px 8px; }
   #msg { color: #fff; font-size: 12px; padding: 6px 8px; display: none; line-height: 1.4; }
   #msg button { margin-top: 6px; width: 100%; font-size: 14px; padding: 8px; border: 0; border-radius: 8px; }
 </style>
@@ -44,6 +44,7 @@
 
 <div id="cam" class="pos-tr">
   <div id="reader"></div>
+  <div id="tip"></div>
   <div id="msg"></div>
   <div id="bar">
     <button type="button" id="btnFlip">カメラ切替</button>
@@ -67,8 +68,19 @@
   if (POSITIONS.indexOf(pos) === -1) pos = 'pos-tr';
   cam.className = pos;
 
-  var qr = null;
+  var stream = null;
   var running = false;
+  var starting = false;
+  var video = document.createElement('video');
+  video.setAttribute('playsinline', '');
+  video.setAttribute('autoplay', '');
+  video.muted = true;
+  document.getElementById('reader').appendChild(video);
+  // 読み取りは表示サイズではなくカメラの元の画質で行う（表示は小さくても細かいQRが読める）
+  var canvas = document.createElement('canvas');
+  var ctx = canvas.getContext('2d', { willReadFrequently: true });
+  var MAX_SIDE = 960;
+  var SCAN_INTERVAL_MS = 120;
   var lastCode = '';
   var lastSeenAt = 0;
 
@@ -89,7 +101,12 @@
     lastSeenAt = now;
     sendToFrames(window, { type: 'prana-qr', code: code });
     cam.classList.add('hit');
+    // 読めたことを映像の上に出す（「読めていない」のか「受付画面に届いていない」のかを見分けるため）
+    var tip = document.getElementById('tip');
+    tip.textContent = '読み取り: ' + code.slice(0, 20);
+    tip.style.display = 'block';
     setTimeout(function () { cam.classList.remove('hit'); }, 600);
+    setTimeout(function () { tip.style.display = 'none'; }, 2000);
   }
 
   function showMsg(text, withButton) {
@@ -106,24 +123,56 @@
   }
   function hideMsg() { msg.style.display = 'none'; }
 
+  function scanLoop() {
+    if (!running) return;
+    try {
+      var w = video.videoWidth, h = video.videoHeight;
+      if (w && h && video.readyState >= 2) {
+        var k = Math.min(1, MAX_SIDE / Math.max(w, h));
+        var cw = Math.round(w * k), ch = Math.round(h * k);
+        if (canvas.width !== cw) canvas.width = cw;
+        if (canvas.height !== ch) canvas.height = ch;
+        ctx.drawImage(video, 0, 0, cw, ch);
+        var img = ctx.getImageData(0, 0, cw, ch);
+        var res = jsQR(img.data, cw, ch, { inversionAttempts: 'dontInvert' });
+        if (res && res.data) onCode(res.data);
+      }
+    } catch (e) {}
+    setTimeout(scanLoop, SCAN_INTERVAL_MS);
+  }
+
   function start() {
-    if (typeof Html5Qrcode === 'undefined') { showMsg('読み取りの部品を読み込めませんでした。再読み込みしてください', false); return; }
+    if (typeof jsQR === 'undefined') { showMsg('読み取りの部品を読み込めませんでした。再読み込みしてください', false); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { showMsg('この端末ではカメラを使えません', false); return; }
+    if (running || starting) return;
+    starting = true;
     hideMsg();
-    if (!qr) qr = new Html5Qrcode('reader', { verbose: false });
     cam.classList.toggle('front', facing === 'user');
-    qr.start({ facingMode: facing }, { fps: 10 }, onCode, function () {})
-      .then(function () { running = true; })
-      .catch(function () {
-        running = false;
-        showMsg('カメラを使えませんでした。カメラを許可してから押してください', true);
-      });
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    }).then(function (s) {
+      stream = s;
+      video.srcObject = s;
+      return video.play();
+    }).then(function () {
+      starting = false;
+      running = true;
+      scanLoop();
+    }).catch(function () {
+      starting = false;
+      stop();
+      showMsg('カメラを使えませんでした。カメラを許可してから押してください', true);
+    });
   }
 
   function stop() {
-    if (qr && running) {
-      running = false;
-      return qr.stop().catch(function () {});
+    running = false;
+    if (stream) {
+      stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+      stream = null;
     }
+    video.srcObject = null;
     return Promise.resolve();
   }
 
