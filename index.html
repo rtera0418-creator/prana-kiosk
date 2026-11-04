@@ -100,6 +100,14 @@
   var SCAN_INTERVAL_MS = 120;
   var lastCode = '';
   var lastSeenAt = 0;
+  // 受付の時間を測る（2026-11-05）：QRを探す1回あたりの時間（直近20回の平均 ms）を受付画面へ一緒に送る
+  var decodeTimes = [];
+  function avgDecodeMs() {
+    if (decodeTimes.length === 0) return undefined;
+    var sum = 0;
+    for (var i = 0; i < decodeTimes.length; i++) sum += decodeTimes[i];
+    return Math.round(sum / decodeTimes.length);
+  }
 
   // 受付画面は Google の枠の中にさらに枠がある。全部の枠に送り、受付画面側が送り元を確かめて受け取る
   function sendToFrames(w, data) {
@@ -124,7 +132,7 @@
     if (code === lastCode && now - lastSeenAt < SAME_CODE_GAP_MS) { lastSeenAt = now; return; }
     lastCode = code;
     lastSeenAt = now;
-    sendToFrames(window, { type: 'prana-qr', code: code });
+    sendToFrames(window, { type: 'prana-qr', code: code, decodeMs: avgDecodeMs() });
     cam.classList.add('hit');
     // 読めたことを映像の上に出す（「読めていない」のか「受付画面に届いていない」のかを見分けるため）
     var tip = document.getElementById('tip');
@@ -157,9 +165,12 @@
         var cw = Math.round(w * k), ch = Math.round(h * k);
         if (canvas.width !== cw) canvas.width = cw;
         if (canvas.height !== ch) canvas.height = ch;
+        var t0 = Date.now();
         ctx.drawImage(video, 0, 0, cw, ch);
         var img = ctx.getImageData(0, 0, cw, ch);
         var res = jsQR(img.data, cw, ch, { inversionAttempts: 'dontInvert' });
+        decodeTimes.push(Date.now() - t0);
+        if (decodeTimes.length > 20) decodeTimes.shift();
         if (res && res.data) onCode(res.data);
       }
     } catch (e) {}
